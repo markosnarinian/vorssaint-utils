@@ -25,9 +25,13 @@ struct PlainTextEditor: NSViewRepresentable {
     /// against another, and this binding outlives the edit that produced
     /// it. Offsets can simply be clamped by whoever reads them.
     var selectedRange: Binding<Range<Int>?>?
-    /// Appearance is applied when the view is made, not on update, so
-    /// these are configuration rather than state: a caller that derives
-    /// one from something that changes will not see it re-applied.
+    /// Appearance is applied when the view is made and re-applied on
+    /// update, so a Settings font change reaches an open pad.
+    /// Nil follows the system font at the historic size.
+    var font: NSFont?
+    /// 1 keeps the font's default combinations (including -> and => in
+    /// coding fonts), 0 renders every character separately.
+    var ligaturesEnabled: Bool = true
     var textColor: NSColor?
     var textContainerInset: NSSize?
     /// Handed the text view once, for callers that need to reach it later.
@@ -35,11 +39,15 @@ struct PlainTextEditor: NSViewRepresentable {
 
     init(text: Binding<String>,
          selectedRange: Binding<Range<Int>?>? = nil,
+         font: NSFont? = nil,
+         ligaturesEnabled: Bool = true,
          textColor: NSColor? = nil,
          textContainerInset: NSSize? = nil,
          onCreate: ((NSTextView) -> Void)? = nil) {
         self._text = text
         self.selectedRange = selectedRange
+        self.font = font
+        self.ligaturesEnabled = ligaturesEnabled
         self.textColor = textColor
         self.textContainerInset = textContainerInset
         self.onCreate = onCreate
@@ -52,7 +60,6 @@ struct PlainTextEditor: NSViewRepresentable {
         scroll.autohidesScrollers = true
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: Self.fontSize)
         textView.textContainer?.lineFragmentPadding = Self.lineFragmentPadding
         textView.allowsUndo = true
         textView.isRichText = false
@@ -71,7 +78,9 @@ struct PlainTextEditor: NSViewRepresentable {
         if let textContainerInset {
             textView.textContainerInset = textContainerInset
         }
+        applyAppearance(to: textView)
         textView.string = text
+        applyTextAttributes(to: textView)
         // Delegate last: assigning .string posts a selection notification
         // synchronously, and makeNSView runs inside SwiftUI's update pass,
         // where writing state is undefined behavior.
@@ -81,14 +90,21 @@ struct PlainTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        guard let textView = nsView.documentView as? NSTextView,
-              textView.string != text,
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        // Restyle stored text only when the appearance actually changed;
+        // typing and pasting already take typingAttributes, so rescanning
+        // the whole storage on every keystroke would cost without effect.
+        let appearanceChanged = appearanceChanged(for: textView)
+        applyAppearance(to: textView)
+        if appearanceChanged { applyTextAttributes(to: textView) }
+        guard textView.string != text,
               !textView.hasMarkedText() else { return }
         // Setting .string posts a selection notification, and answering it
         // here would write state from inside a view update.
         context.coordinator.isApplyingExternalText = true
         textView.string = text
         context.coordinator.isApplyingExternalText = false
+        applyTextAttributes(to: textView)
         // Programmatic replaces (load, retention, restore) invalidate undo
         // entries recorded against the old storage; replaying one would
         // resurrect cleared text or throw a range exception.
@@ -97,6 +113,49 @@ struct PlainTextEditor: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, selectedRange: selectedRange)
+    }
+
+    /// The font new text takes, plus the ligature choice. Stored text gets
+    /// the same pair through applyTextAttributes below, so a Settings
+    /// change restyles what is already on the pad.
+    private func appearanceChanged(for textView: NSTextView) -> Bool {
+        let resolved = font ?? .systemFont(ofSize: Self.fontSize)
+        let ligature = ligaturesEnabled ? 1 : 0
+        return textView.font != resolved
+            || (textView.typingAttributes[.font] as? NSFont) != resolved
+            || (textView.typingAttributes[.ligature] as? Int) != ligature
+    }
+
+    private func applyAppearance(to textView: NSTextView) {
+        let resolved = font ?? .systemFont(ofSize: Self.fontSize)
+        if textView.font != resolved { textView.font = resolved }
+        let ligature = ligaturesEnabled ? 1 : 0
+        var typing = textView.typingAttributes
+        if (typing[.font] as? NSFont) != resolved { typing[.font] = resolved }
+        if (typing[.ligature] as? Int) != ligature { typing[.ligature] = ligature }
+        textView.typingAttributes = typing
+    }
+
+    private func applyTextAttributes(to textView: NSTextView) {
+        guard let storage = textView.textStorage, storage.length > 0,
+              let font = textView.font else { return }
+        let full = NSRange(location: 0, length: storage.length)
+        let ligature = ligaturesEnabled ? 1 : 0
+        var needsFont = false
+        var needsLigature = false
+        storage.enumerateAttributes(in: full) { attributes, _, stop in
+            if (attributes[.font] as? NSFont) != font { needsFont = true }
+            if (attributes[.ligature] as? Int) != ligature { needsLigature = true }
+            if needsFont, needsLigature { stop.pointee = true }
+        }
+        guard needsFont || needsLigature else { return }
+        // Plain-text storage only: stamp the editor font and ligature choice
+        // over the whole range without touching undoable content.
+        storage.beginEditing()
+        if needsFont { storage.addAttribute(.font, value: font, range: full) }
+        if needsLigature { storage.addAttribute(.ligature, value: ligature, range: full) }
+        storage.endEditing()
+        textView.needsDisplay = true
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

@@ -14,6 +14,9 @@ struct NotchScratchpadView: View {
     @ObservedObject var service: NotchService
     @ObservedObject private var pad = ScratchpadService.shared
     @ObservedObject private var l10n = L10n.shared
+    @AppStorage(DefaultsKey.scratchpadFontName) private var fontName = ""
+    @AppStorage(DefaultsKey.scratchpadFontSize) private var fontSize = 13.0
+    @AppStorage(DefaultsKey.scratchpadLigaturesEnabled) private var ligaturesEnabled = true
     @State private var loadFailed = false
     @State private var copied = false
     @State private var hoveredPadID: UUID?
@@ -29,6 +32,9 @@ struct NotchScratchpadView: View {
     }
 
     private var selectedPad: ScratchpadPad? { pad.pads.first { $0.id == pad.selectedPadID } }
+    private var editorFont: NSFont {
+        ScratchpadSupport.editorFont(name: fontName, size: fontSize)
+    }
 
     var body: some View {
         Group {
@@ -38,7 +44,7 @@ struct NotchScratchpadView: View {
                 VStack(spacing: 6) {
                     toolbar
                     ZStack(alignment: .topLeading) {
-                        PlainTextEditor(text: $pad.text, textColor: .white, textContainerInset: Self.editorInset) { view in
+                        PlainTextEditor(text: $pad.text, font: editorFont, ligaturesEnabled: ligaturesEnabled, textColor: .white, textContainerInset: Self.editorInset) { view in
                             view.insertionPointColor = .white
                             editor.view = view
                             DispatchQueue.main.async { focusEditor() }
@@ -47,10 +53,11 @@ struct NotchScratchpadView: View {
                         .allowsHitTesting(!pad.isPreviewing)
                         .accessibilityHidden(pad.isPreviewing)
                         if pad.isPreviewing {
-                            MarkdownPreview(blocks: ScratchpadSupport.markdownPreview(pad.text))
+                            MarkdownPreview(blocks: ScratchpadSupport.markdownPreview(pad.text),
+                                            codeFont: editorFont)
                         } else if pad.text.isEmpty {
                             Text(text.placeholder)
-                                .font(.system(size: PlainTextEditor.fontSize))
+                                .font(.custom(editorFont.fontName, size: editorFont.pointSize))
                                 .foregroundStyle(.white.opacity(0.35))
                                 .padding(.leading, Self.editorInset.width + PlainTextEditor.lineFragmentPadding)
                                 .padding(.top, Self.editorInset.height)

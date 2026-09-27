@@ -20,6 +20,9 @@ struct QuickToolsSettings: View {
     @AppStorage(DefaultsKey.scratchpadRetention) private var scratchpadRetention = ScratchpadRetention.never.rawValue
     @AppStorage(DefaultsKey.scratchpadCloseOnClickOutside) private var scratchpadCloseOnClickOutside = true
     @AppStorage(DefaultsKey.scratchpadBackgroundOpacity) private var scratchpadBackgroundOpacity = 0.0
+    @AppStorage(DefaultsKey.scratchpadFontName) private var scratchpadFontName = ""
+    @AppStorage(DefaultsKey.scratchpadFontSize) private var scratchpadFontSize = 13.0
+    @AppStorage(DefaultsKey.scratchpadLigaturesEnabled) private var scratchpadLigaturesEnabled = true
     @AppStorage(DefaultsKey.micMuteMenuBarIndicator) private var micMenuBarIndicator = false
     @AppStorage(DefaultsKey.cleaningModeKeepScreenVisible) private var cleaningModeKeepScreenVisible = false
 
@@ -233,6 +236,43 @@ struct QuickToolsSettings: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
+                    Picker(FeatureStrings.scratchpad(l10n.language).fontTitle,
+                           selection: $scratchpadFontName) {
+                        Text(FeatureStrings.scratchpad(l10n.language).fontSystem).tag("")
+                        ForEach(scratchpadFontOptions, id: \.self) { family in
+                            Text(family).tag(family)
+                        }
+                    }
+                    .onChange(of: scratchpadFontName) { _, newValue in
+                        scratchpadFontName = ScratchpadSupport.sanitizedFontName(newValue)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(FeatureStrings.scratchpad(l10n.language).fontSizeTitle)
+                            Spacer()
+                            Text("\(Int(ScratchpadSupport.sanitizedFontSize(scratchpadFontSize))) pt")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: scratchpadFontSizeBinding,
+                               in: ScratchpadSupport.fontSizeRange,
+                               step: 0.5)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(scratchpadPreviewName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("-> => != == <=")
+                            .font(scratchpadPreviewFont)
+                        Text("Agility 0123456789")
+                            .font(scratchpadPreviewFont)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    Toggle(FeatureStrings.scratchpad(l10n.language).ligaturesTitle,
+                           isOn: $scratchpadLigaturesEnabled)
                     Toggle(l10n.s.quickToolShortcutToggle, isOn: $scratchpadShortcutEnabled)
                         .onChange(of: scratchpadShortcutEnabled) { _, _ in
                             ScratchpadService.shared.syncWithPreferences()
@@ -280,6 +320,39 @@ struct QuickToolsSettings: View {
             get: { ScratchpadSupport.sanitizedBackgroundOpacity(scratchpadBackgroundOpacity) },
             set: { scratchpadBackgroundOpacity = ScratchpadSupport.sanitizedBackgroundOpacity($0) }
         )
+    }
+
+    private var scratchpadFontSizeBinding: Binding<Double> {
+        Binding(
+            get: { ScratchpadSupport.sanitizedFontSize(scratchpadFontSize) },
+            set: { scratchpadFontSize = ScratchpadSupport.sanitizedFontSize($0) }
+        )
+    }
+
+    /// The offered editor fonts: the system font plus the two coding
+    /// fonts with ligature support. A stored choice outside the list is
+    /// kept so reinstalling its font restores it.
+    private var scratchpadFontOptions: [String] {
+        let stored = ScratchpadSupport.sanitizedFontName(scratchpadFontName)
+        guard !stored.isEmpty, !ScratchpadSupport.editorFontChoices.contains(stored) else {
+            return ScratchpadSupport.editorFontChoices
+        }
+        return (ScratchpadSupport.editorFontChoices + [stored]).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private var scratchpadPreviewFont: Font {
+        let resolved = ScratchpadSupport.editorFont(name: scratchpadFontName,
+                                                    size: scratchpadFontSize)
+        return .custom(resolved.fontName, size: resolved.pointSize)
+    }
+
+    private var scratchpadPreviewName: String {
+        let stored = ScratchpadSupport.sanitizedFontName(scratchpadFontName)
+        return stored.isEmpty
+            ? FeatureStrings.scratchpad(l10n.language).fontSystem
+            : stored
     }
 }
 

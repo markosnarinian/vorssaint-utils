@@ -10,6 +10,9 @@ struct ScratchpadView: View {
     @ObservedObject private var service = ScratchpadService.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.scratchpadBackgroundOpacity) private var backgroundOpacity = 0.0
+    @AppStorage(DefaultsKey.scratchpadFontName) private var fontName = ""
+    @AppStorage(DefaultsKey.scratchpadFontSize) private var fontSize = 13.0
+    @AppStorage(DefaultsKey.scratchpadLigaturesEnabled) private var ligaturesEnabled = true
     @State private var copied = false
     @State private var dialog: ScratchpadDialog?
     @State private var renameDraft = ""
@@ -18,6 +21,9 @@ struct ScratchpadView: View {
 
     private var text: ScratchpadFeatureStrings { FeatureStrings.scratchpad(l10n.language) }
     private var isEmpty: Bool { service.text.isEmpty }
+    private var editorFont: NSFont {
+        ScratchpadSupport.editorFont(name: fontName, size: fontSize)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -278,6 +284,8 @@ struct ScratchpadView: View {
     private var editor: some View {
         ZStack {
             PlainTextEditor(text: $service.text,
+                            font: editorFont,
+                            ligaturesEnabled: ligaturesEnabled,
                             textColor: .labelColor,
                             textContainerInset: Self.editorInset,
                             onCreate: { ScratchpadService.shared.registerTextView($0) })
@@ -289,7 +297,7 @@ struct ScratchpadView: View {
                         // NSTextView has no placeholder of its own; this sits at
                         // the exact spot of the first line and never takes clicks.
                         Text(text.placeholder)
-                            .font(.system(size: PlainTextEditor.fontSize))
+                            .font(.custom(editorFont.fontName, size: editorFont.pointSize))
                             .foregroundStyle(.tertiary)
                             .padding(.leading,
                                      Self.editorInset.width + PlainTextEditor.lineFragmentPadding)
@@ -299,7 +307,8 @@ struct ScratchpadView: View {
                 }
 
             if service.isPreviewing {
-                MarkdownPreview(blocks: ScratchpadSupport.markdownPreview(service.text))
+                MarkdownPreview(blocks: ScratchpadSupport.markdownPreview(service.text),
+                                codeFont: editorFont)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -543,6 +552,9 @@ private struct ScratchpadResizeOverlay: NSViewRepresentable {
 /// Shared with the island's page, which shows the same formatted reading.
 struct MarkdownPreview: NSViewRepresentable {
     let blocks: [ScratchpadMarkdownBlock]
+    /// The editor font, reused for code blocks so a coding font with
+    /// ligatures reads the same in the preview. Nil keeps the system mono.
+    var codeFont: NSFont?
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
@@ -557,13 +569,13 @@ struct MarkdownPreview: NSViewRepresentable {
         textView.isRichText = true
         textView.textContainerInset = NSSize(width: 7, height: 2)
         textView.linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor]
-        textView.textStorage?.setAttributedString(Self.rendered(blocks))
+        textView.textStorage?.setAttributedString(Self.rendered(blocks, codeFont: codeFont))
         return scroll
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
-        let content = Self.rendered(blocks)
+        let content = Self.rendered(blocks, codeFont: codeFont)
         guard !textView.attributedString().isEqual(to: content) else { return }
         textView.textStorage?.setAttributedString(content)
     }
@@ -572,7 +584,8 @@ struct MarkdownPreview: NSViewRepresentable {
         Coordinator()
     }
 
-    private static func rendered(_ blocks: [ScratchpadMarkdownBlock]) -> NSAttributedString {
+    private static func rendered(_ blocks: [ScratchpadMarkdownBlock],
+                                 codeFont: NSFont?) -> NSAttributedString {
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
             if index > 0 {
@@ -580,12 +593,22 @@ struct MarkdownPreview: NSViewRepresentable {
                     && block.containerID == blocks[index - 1].containerID
                 result.append(NSAttributedString(string: sameContainer ? "\n" : "\n\n"))
             }
-            result.append(rendered(block))
+            result.append(rendered(block, codeFont: codeFont))
         }
         return result
     }
 
-    private static func rendered(_ block: ScratchpadMarkdownBlock) -> NSAttributedString {
+    private static func codeBlockFont(_ codeFont: NSFont?) -> NSFont {
+        guard let codeFont else {
+            return .monospacedSystemFont(ofSize: 12, weight: .regular)
+        }
+        let size = min(max(codeFont.pointSize - 1, 10), 20)
+        if let sized = NSFont(name: codeFont.fontName, size: size) { return sized }
+        return NSFontManager.shared.convert(codeFont, toSize: size)
+    }
+
+    private static func rendered(_ block: ScratchpadMarkdownBlock,
+                                 codeFont: NSFont?) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 2
         var font = NSFont.systemFont(ofSize: 13)
@@ -606,7 +629,7 @@ struct MarkdownPreview: NSViewRepresentable {
             prefix = String(repeating: "  ", count: depth - 1) + "▏ "
             color = .secondaryLabelColor
         case .code:
-            font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            font = Self.codeBlockFont(codeFont)
         case .thematicBreak:
             text = AttributedString(String(repeating: "─", count: 24))
             color = .secondaryLabelColor
@@ -636,13 +659,14 @@ struct MarkdownPreview: NSViewRepresentable {
                                  value: NSColor.labelColor.withAlphaComponent(0.07),
                                  range: fullRange)
         }
-        applyInlineFormatting(to: content, baseFont: font)
+        applyInlineFormatting(to: content, baseFont: font, codeFont: codeFont)
         result.append(content)
         return result
     }
 
     private static func applyInlineFormatting(to content: NSMutableAttributedString,
-                                              baseFont: NSFont) {
+                                              baseFont: NSFont,
+                                              codeFont: NSFont? = nil) {
         let fullRange = NSRange(location: 0, length: content.length)
         var intents: [(InlinePresentationIntent, NSRange)] = []
         content.enumerateAttribute(.inlinePresentationIntent, in: fullRange) { value, range, _ in
@@ -652,7 +676,7 @@ struct MarkdownPreview: NSViewRepresentable {
 
         for (intent, range) in intents {
             var font = intent.contains(.code)
-                ? NSFont.monospacedSystemFont(ofSize: max(12, baseFont.pointSize - 1), weight: .regular)
+                ? codeBlockFont(codeFont)
                 : baseFont
             if intent.contains(.stronglyEmphasized) {
                 font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)

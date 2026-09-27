@@ -86,6 +86,7 @@ enum NotchCompactTests {
     }
     struct MarkdownPreview: View {
         let blocks: [ScratchpadMarkdownBlock]
+        var codeFont: NSFont?
         var body: some View { Color.clear }
     }
     struct Music { var playback: Bool? = true }

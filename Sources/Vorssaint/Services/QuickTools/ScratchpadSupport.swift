@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Vorssaint
 
+import AppKit
 import Foundation
 
 /// How long each scratchpad keeps text that nobody edits. The check runs only
@@ -188,6 +189,41 @@ enum ScratchpadSupport {
     /// The fill sits over the existing material: zero preserves the familiar
     /// frosted pad, while one fully covers what is behind the window.
     static let backgroundOpacityRange: ClosedRange<Double> = 0...1
+
+    /// The editor's point size stays in a readable band. Values outside it
+    /// clamp; non-finite values fall back to the historic size.
+    static let defaultFontSize: CGFloat = 13
+    static let fontSizeRange: ClosedRange<Double> = 10...24
+
+    static func sanitizedFontSize(_ value: Double) -> Double {
+        guard value.isFinite else { return Double(defaultFontSize) }
+        return min(max(value, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+    }
+
+    /// Stored as a full NSFont name or family; "" follows the system font.
+    static func sanitizedFontName(_ name: String?) -> String {
+        let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return String(trimmed.prefix(128))
+    }
+
+    /// Resolves the editor font, falling back to the system font when the
+    /// stored name is empty or no longer installed.
+    static func editorFont(name: String?, size: Double) -> NSFont {
+        let pointSize = CGFloat(sanitizedFontSize(size))
+        let stored = sanitizedFontName(name)
+        guard !stored.isEmpty else { return .systemFont(ofSize: pointSize) }
+        if let direct = NSFont(name: stored, size: pointSize) { return direct }
+        let manager = NSFontManager.shared
+        if let family = manager.font(withFamily: stored, traits: [], weight: 5, size: pointSize) {
+            return family
+        }
+        return .systemFont(ofSize: pointSize)
+    }
+
+    /// The offered editor fonts besides the system font: coding families
+    /// with ligature support.
+    static let editorFontChoices = ["JetBrains Mono", "Fira Code"]
 
     static func sanitizedBackgroundOpacity(_ value: Double) -> Double {
         guard value.isFinite else { return backgroundOpacityRange.upperBound }
